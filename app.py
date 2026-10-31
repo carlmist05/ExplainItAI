@@ -1,852 +1,585 @@
 import os
+import json
 import sqlite3
-import streamlit as st
-from google import genai
 from pathlib import Path
+from datetime import datetime
 
-# ==========================================
-# PERMANENT CHAT HISTORY DATABASE
-# ==========================================
+import streamlit as st
+import streamlit.components.v1 as components
+from google import genai
 
-# Store the database in the project folder.
-DB_PATH = Path(__file__).resolve().parent / "chat_history.db"
+# ============================================================
+# ExplainIt AI — beginner-friendly AI learning assistant
+# ============================================================
 
-
-def get_connection():
-    """Connect to the local SQLite database."""
-    return sqlite3.connect(DB_PATH)
-
-
-def initialize_database():
-    """Create the history table if it does not exist."""
-    with get_connection() as conn:
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS chat_history (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                question TEXT NOT NULL,
-                answer TEXT NOT NULL,
-                study_mode TEXT NOT NULL,
-                created_at TEXT NOT NULL DEFAULT (
-                    datetime('now', 'localtime')
-                )
-            )
-        """)
-
-
-def save_chat(question, answer, study_mode):
-    """Save a question and its AI answer permanently."""
-    with get_connection() as conn:
-        conn.execute(
-            """
-            INSERT INTO chat_history
-                (question, answer, study_mode)
-            VALUES (?, ?, ?)
-            """,
-            (question, answer, study_mode)
-        )
-
-
-def get_all_chats():
-    """Return saved conversations, newest first."""
-    with get_connection() as conn:
-        return conn.execute("""
-            SELECT id, question, answer, study_mode, created_at
-            FROM chat_history
-            ORDER BY id DESC
-        """).fetchall()
-
-
-def get_chat(chat_id):
-    """Retrieve one saved conversation."""
-    with get_connection() as conn:
-        return conn.execute(
-            """
-            SELECT id, question, answer, study_mode, created_at
-            FROM chat_history
-            WHERE id = ?
-            """,
-            (chat_id,)
-        ).fetchone()
-
-
-def delete_chat(chat_id):
-    """Delete one conversation."""
-    with get_connection() as conn:
-        conn.execute(
-            "DELETE FROM chat_history WHERE id = ?",
-            (chat_id,)
-        )
-
-
-def clear_all_chats():
-    """Delete every saved conversation."""
-    with get_connection() as conn:
-        conn.execute("DELETE FROM chat_history")
-
-
-# Create the database when the app starts.
-initialize_database()
-
-# ==========================================
-# PAGE CONFIGURATION
-# ==========================================
+APP_DIR = Path(__file__).resolve().parent
+DB_PATH = APP_DIR / "chat_history.db"
+MODEL_NAME = "gemini-3.8-flash"
 
 st.set_page_config(
-    page_title="ExplainIt AI | Smart Learning",
+    page_title="ExplainIt AI",
     page_icon="📚",
     layout="wide",
-    initial_sidebar_state="expanded"
+    initial_sidebar_state="expanded",
 )
 
-# ==========================================
-# CUSTOM DESIGN AND COLOURS
-# ==========================================
-
-st.markdown("""
-<style>
-    /* MAIN BACKGROUND */
+# ------------------------- Styling --------------------------
+st.markdown(
+    """
+    <style>
     .stApp {
-        background-color: #1E293B !important;
+        background: #1E293B !important;
         color: #F1F5F9 !important;
     }
-
-    .block-container {
-        max-width: 1100px;
-        padding-top: 2rem;
-        padding-bottom: 3rem;
-    }
-
-    /* SIDEBAR */
     [data-testid="stSidebar"] {
-        background-color: #273449 !important;
+        background: #273449 !important;
         border-right: 1px solid #475569;
     }
-
     [data-testid="stSidebar"] p,
     [data-testid="stSidebar"] label,
     [data-testid="stSidebar"] li {
         color: #E2E8F0 !important;
     }
-
-    .brand {
-        font-size: 1.7rem;
-        font-weight: 800;
-        color: #93C5FD !important;
-    }
-
-    .brand-caption {
-        color: #CBD5E1 !important;
-        margin-bottom: 2rem;
-    }
-
-    /* HEADER */
     .hero {
-        background: linear-gradient(
-            135deg,
-            #334155,
-            #1D4ED8
-        ) !important;
-        padding: 2.5rem;
+        background: linear-gradient(135deg, #334155, #064CCB);
+        padding: 2.2rem;
         border-radius: 22px;
-        margin-bottom: 2rem;
+        margin-bottom: 1.7rem;
     }
-
     .hero h1 {
         color: #FFFFFF !important;
-        font-size: 2.3rem;
-        font-weight: 800;
-        line-height: 1.3;
+        font-size: 2.25rem;
+        line-height: 1.25;
     }
-
     .hero p {
         color: #E2E8F0 !important;
         font-size: 1.05rem;
-        line-height: 1.8;
+        line-height: 1.7;
     }
-
-    /* SECTION HEADINGS */
-    .section-title {
-        font-size: 1.4rem;
-        font-weight: 750;
-        color: #F1F5F9 !important;
-        margin-top: 1.5rem;
-        margin-bottom: 0.6rem;
+    h1, h2, h3, h4, p, li, label {
+        color: #F1F5F9;
     }
-
-    .section-caption {
-        color: #CBD5E1 !important;
-        font-size: 0.95rem;
-        line-height: 1.6;
-    }
-
-    /* FORM LABELS */
-    [data-testid="stWidgetLabel"] p,
-    [data-testid="stWidgetLabel"] label {
+    [data-testid="stWidgetLabel"] p {
         color: #E2E8F0 !important;
         font-weight: 600 !important;
     }
-
-    /* LEARNING-STYLE DROPDOWN */
     div[data-baseweb="select"] > div {
-        background-color: #334155 !important;
+        background: #334155 !important;
         border: 1px solid #64748B !important;
-        border-radius: 10px !important;
     }
-
     div[data-baseweb="select"] span,
     div[data-baseweb="select"] input {
         color: #F1F5F9 !important;
         -webkit-text-fill-color: #F1F5F9 !important;
     }
-
-    div[data-baseweb="select"] svg {
-        fill: #93C5FD !important;
-    }
-
-    div[data-baseweb="popover"],
-    div[data-baseweb="menu"] {
-        background-color: #334155 !important;
-    }
-
-    li[role="option"] {
-        background-color: #334155 !important;
-        color: #F1F5F9 !important;
-    }
-
-    li[role="option"]:hover {
-        background-color: #475569 !important;
-        color: #FFFFFF !important;
-    }
-
-    /* QUESTION BOX */
-    div[data-testid="stTextArea"] textarea {
-        background-color: #334155 !important;
+    div[data-testid="stTextArea"] textarea,
+    div[data-testid="stTextInput"] input {
+        background: #334155 !important;
         color: #F1F5F9 !important;
         -webkit-text-fill-color: #F1F5F9 !important;
         border: 1px solid #64748B !important;
-        border-radius: 12px !important;
+        border-radius: 10px !important;
     }
-
-    div[data-testid="stTextArea"] textarea::placeholder {
+    div[data-testid="stTextArea"] textarea::placeholder,
+    div[data-testid="stTextInput"] input::placeholder {
         color: #CBD5E1 !important;
         -webkit-text-fill-color: #CBD5E1 !important;
     }
-
-    /* BUTTONS */
-    div.stButton > button {
-        background-color: #3B82F6 !important;
-        color: #FFFFFF !important;
-        border: 1px solid #3B82F6 !important;
+    div.stButton > button,
+    div.stDownloadButton > button {
+        background: #1685F8 !important;
+        color: white !important;
+        border: 1px solid #1685F8 !important;
         border-radius: 10px !important;
-        min-height: 45px;
-        font-weight: 600;
+        font-weight: 650 !important;
+        min-height: 42px;
     }
-
-    div.stButton > button p {
-        color: #FFFFFF !important;
+    div.stButton > button:hover,
+    div.stDownloadButton > button:hover {
+        background: #0968D8 !important;
+        border-color: #0968D8 !important;
     }
-
-    div.stButton > button:hover {
-        background-color: #2563EB !important;
-        border-color: #2563EB !important;
-    }
-
-    /* FEATURE CARDS */
     .feature-card {
-        background-color: #334155 !important;
-        padding: 1.3rem;
-        border-radius: 16px;
+        background: #334155;
         border: 1px solid #475569;
-        min-height: 125px;
-        margin-bottom: 0.5rem;
-    }
-
-    .feature-title {
-        color: #F1F5F9 !important;
-        font-weight: 700;
-    }
-
-    .feature-description {
-        color: #CBD5E1 !important;
-        line-height: 1.6;
-    }
-
-    /* AI ANSWER TEXT */
-    div[data-testid="stMarkdownContainer"] p,
-    div[data-testid="stMarkdownContainer"] li,
-    div[data-testid="stMarkdownContainer"] h1,
-    div[data-testid="stMarkdownContainer"] h2,
-    div[data-testid="stMarkdownContainer"] h3,
-    div[data-testid="stMarkdownContainer"] h4,
-    div[data-testid="stMarkdownContainer"] strong {
-        color: #F1F5F9 !important;
-    }
-
-    /* CODE EXAMPLES */
-    div[data-testid="stMarkdownContainer"] code {
-        background-color: #475569 !important;
-        color: #FCA5A5 !important;
-        border-radius: 4px;
-        padding: 2px 5px;
-    }
-
-    div[data-testid="stMarkdownContainer"] pre {
-        background-color: #0F172A !important;
-        border: 1px solid #475569;
-        border-radius: 10px;
+        border-radius: 14px;
         padding: 1rem;
-        overflow-x: auto;
+        margin-bottom: .7rem;
     }
-
-    div[data-testid="stMarkdownContainer"] pre code {
-        background-color: transparent !important;
-        color: #E2E8F0 !important;
-    }
-
-    /* ANSWER CONTAINER */
-    [data-testid="stVerticalBlockBorderWrapper"] {
-        background-color: #334155 !important;
-        border-color: #475569 !important;
-        border-radius: 16px;
-    }
-
-    /* FOOTER */
-    .footer {
-        text-align: center;
+    .muted {
         color: #CBD5E1 !important;
-        font-size: 0.9rem;
-        padding-top: 2rem;
-        padding-bottom: 1rem;
     }
-</style>
-""", unsafe_allow_html=True)
-
-# ==========================================
-# SESSION STATE
-# ==========================================
-
-if "question" not in st.session_state:
-    st.session_state.question = ""
-
-if "answer" not in st.session_state:
-    st.session_state.answer = ""
-
-if "last_question" not in st.session_state:
-    st.session_state.last_question = ""
-
-# ==========================================
-# SIDEBAR
-# ==========================================
-
-with st.sidebar:
-    st.markdown(
-        '<div class="brand">📚 ExplainIt AI</div>',
-        unsafe_allow_html=True
-    )
-
-    st.markdown(
-        '<div class="brand-caption">'
-        'Your personal learning companion'
-        '</div>',
-        unsafe_allow_html=True
-    )
-
-    st.markdown("### 🧭 Navigation")
-
-    page = st.radio(
-        "Choose a page",
-        ["🏠 Home", "📖 About"],
-        label_visibility="collapsed"
-    )
-
-    st.divider()
-
-    st.markdown("### ✨ What you can do")
-
-    st.markdown("""
-    - Understand difficult topics
-    - Learn with practical examples
-    - Get step-by-step explanations
-    - Summarize topics
-    - Understand programming code
-    """)
-
-    st.divider()
-
-    # ======================================
-    # SAVED CHAT HISTORY
-    # ======================================
-
-    st.divider()
-
-    st.markdown("### 💾 Chat History")
-
-    saved_chats = get_all_chats()
-
-    if saved_chats:
-
-        # Display saved questions in a dropdown.
-        chat_options = {
-            f"#{chat[0]} - {chat[1][:45]}": chat[0]
-            for chat in saved_chats
-        }
-
-        selected_label = st.selectbox(
-            "Previous conversations",
-            options=list(chat_options.keys()),
-            key="history_selector"
-        )
-
-        selected_id = chat_options[selected_label]
-
-        if st.button(
-            "📖 Open conversation",
-            use_container_width=True
-        ):
-            selected_chat = get_chat(selected_id)
-
-            if selected_chat:
-                st.session_state.answer = selected_chat[2]
-                st.session_state.last_question = selected_chat[1]
-                st.session_state.question = selected_chat[1]
-                st.session_state.last_study_mode = selected_chat[3]
-
-                st.session_state.history_loaded = True
-
-                st.rerun()
-
-        if st.button(
-            "🗑️ Delete selected conversation",
-            use_container_width=True
-        ):
-            delete_chat(selected_id)
-
-            st.session_state.answer = ""
-            st.session_state.last_question = ""
-            st.session_state.question = ""
-
-            st.rerun()
-
-        # Clear all saved conversations.
-        if st.button(
-            "🧹 Clear all history",
-            use_container_width=True
-        ):
-            st.session_state.confirm_clear_history = True
-
-        if st.session_state.get("confirm_clear_history", False):
-
-            st.warning(
-                "This will permanently delete all saved conversations."
-            )
-
-            confirm_col, cancel_col = st.columns(2)
-
-            with confirm_col:
-                if st.button("Yes, delete"):
-                    clear_all_chats()
-
-                    st.session_state.answer = ""
-                    st.session_state.last_question = ""
-                    st.session_state.question = ""
-                    st.session_state.confirm_clear_history = False
-
-                    st.rerun()
-
-            with cancel_col:
-                if st.button("Cancel"):
-                    st.session_state.confirm_clear_history = False
-                    st.rerun()
-
-    else:
-        st.caption("Your saved conversations will appear here.")
-
-    st.caption("Made for curious minds 💜")
-
-# ==========================================
-# ABOUT PAGE
-# ==========================================
-
-if page == "📖 About":
-
-    st.title("📖 About ExplainIt AI")
-
-    st.write("""
-    ExplainIt AI is a learning assistant designed to help
-    students understand difficult concepts using artificial
-    intelligence.
-    """)
-
-    st.subheader("🎯 Our mission")
-
-    st.write("""
-    Make learning easier by turning complex ideas into
-    understandable explanations.
-    """)
-
-    st.subheader("👨‍🎓 Who is it for?")
-
-    st.write("""
-    University students, programming beginners, and anyone
-    who wants to learn something new.
-    """)
-
-    st.subheader("🛠️ Technology")
-
-    st.markdown("""
-    - Python
-    - Streamlit
-    - Google Gen AI SDK
-    - Gemma model integration
-    """)
-
-    st.info(
-        "AI-generated information can be incorrect. "
-        "Verify important information using reliable sources."
-    )
-
-# ==========================================
-# HOME PAGE
-# ==========================================
-
-else:
-
-    # Welcome banner
-    st.markdown("""
-    <div class="hero">
-        <h1>Learn anything. Understand everything. ✨</h1>
-        <p>
-            Confused about a topic? Ask ExplainIt AI.
-            Get simple explanations, practical examples,
-            and step-by-step guidance to support your learning.
-        </p>
-    </div>
-    """, unsafe_allow_html=True)
-
-    st.markdown(
-        '<div class="section-title">'
-        'What would you like to learn?'
-        '</div>',
-        unsafe_allow_html=True
-    )
-
-    st.markdown(
-        '<div class="section-caption">'
-        'Enter a question below and choose how you want to learn.'
-        '</div>',
-        unsafe_allow_html=True
-    )
-
-    # Study modes
-    study_mode = st.selectbox(
-    "Choose your learning style",
-    [
-        "Explain simply",
-        "Explain step by step",
-        "Give practical examples",
-        "Summarize a topic",
-        "Help me understand code",
-        "Generate a quiz",
-        "Create revision questions"
-    ]
+    </style>
+    """,
+    unsafe_allow_html=True,
 )
 
-    # Question input
+# ---------------------- API configuration -------------------
+def get_api_key():
+    """Read the key from Streamlit Secrets first, then environment."""
+    try:
+        key = st.secrets.get("GEMINI_API_KEY", "")
+    except Exception:
+        key = ""
+    return key or os.getenv("GEMINI_API_KEY", "")
+
+
+def get_client():
+    key = get_api_key()
+    if not key:
+        return None
+    try:
+        return genai.Client(api_key=key)
+    except Exception:
+        return None
+
+
+# ----------------------- Chat database ----------------------
+def get_connection():
+    return sqlite3.connect(DB_PATH, timeout=10)
+
+
+def initialize_database():
+    with get_connection() as conn:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS chat_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                question TEXT NOT NULL,
+                answer TEXT NOT NULL,
+                study_mode TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            )
+            """
+        )
+
+
+def save_chat(question, answer, study_mode):
+    with get_connection() as conn:
+        conn.execute(
+            """
+            INSERT INTO chat_history (question, answer, study_mode, created_at)
+            VALUES (?, ?, ?, ?)
+            """,
+            (
+                question,
+                answer,
+                study_mode,
+                datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            ),
+        )
+
+
+def get_all_chats():
+    with get_connection() as conn:
+        return conn.execute(
+            """
+            SELECT id, question, answer, study_mode, created_at
+            FROM chat_history ORDER BY id DESC
+            """
+        ).fetchall()
+
+
+def get_chat(chat_id):
+    with get_connection() as conn:
+        return conn.execute(
+            """
+            SELECT id, question, answer, study_mode, created_at
+            FROM chat_history WHERE id = ?
+            """,
+            (chat_id,),
+        ).fetchone()
+
+
+def delete_chat(chat_id):
+    with get_connection() as conn:
+        conn.execute("DELETE FROM chat_history WHERE id = ?", (chat_id,))
+
+
+def clear_all_chats():
+    with get_connection() as conn:
+        conn.execute("DELETE FROM chat_history")
+
+
+initialize_database()
+
+# ------------------------- Session state --------------------
+defaults = {
+    "answer": "",
+    "last_question": "",
+    "last_study_mode": "Explain simply",
+    "quiz_data": None,
+    "quiz_topic": "",
+    "quiz_submitted": False,
+    "quiz_score": None,
+}
+for key, value in defaults.items():
+    if key not in st.session_state:
+        st.session_state[key] = value
+
+
+# ------------------------- Sidebar --------------------------
+with st.sidebar:
+    st.markdown(
+        '<div style="font-size:1.65rem;font-weight:800;color:#93C5FD;">📚 ExplainIt AI</div>',
+        unsafe_allow_html=True,
+    )
+    st.caption("Your personal learning companion")
+    page = st.radio(
+        "🧭 Navigation",
+        ["🏠 Home", "📚 Learning history", "🎓 Quiz generator", "ℹ️ About"],
+        label_visibility="visible",
+    )
+    st.divider()
+    st.markdown("### ✨ What you can do")
+    st.markdown(
+        """
+        - Understand difficult topics
+        - Learn with practical examples
+        - Get step-by-step explanations
+        - Generate practice quizzes
+        - Listen to explanations
+        - Download notes for revision
+        """
+    )
+    st.divider()
+    st.caption("Made for curious minds 💙")
+
+
+# --------------------------- Home ---------------------------
+if page == "🏠 Home":
+    st.markdown(
+        """
+        <div class="hero">
+          <h1>Learn anything. Understand everything. ✨</h1>
+          <p>Confused about a topic? Ask ExplainIt AI. Get simple explanations,
+          practical examples, and step-by-step guidance to support your learning.</p>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    st.subheader("What would you like to learn?")
+    st.markdown('<p class="muted">Enter a question below and choose how you want to learn.</p>',
+                unsafe_allow_html=True)
+
+    learning_style = st.selectbox(
+        "Choose your learning style",
+        [
+            "Explain simply",
+            "Step-by-step explanation",
+            "Use practical examples",
+            "Summarize the topic",
+            "Explain programming code",
+        ],
+        key="learning_style",
+    )
     question = st.text_area(
         "Your question",
-        value=st.session_state.question,
-        placeholder=(
-            "Example: Explain variables in Python "
-            "as if I am a beginner..."
-        ),
-        height=140,
-        label_visibility="collapsed"
+        value=st.session_state.last_question if st.session_state.last_question else "",
+        placeholder="Example: Explain variables in Python as if I am a beginner...",
+        height=130,
+        key="question_input",
+        label_visibility="collapsed",
     )
 
-    # Example questions
     st.markdown("**Need an idea? Try one of these:**")
 
-    col1, col2, col3 = st.columns(3)
+    def set_suggested_question(text):
+        st.session_state["question_input"] = text
 
-    with col1:
-        if st.button(
-            "🐍 Python basics",
-            use_container_width=True
-        ):
-            st.session_state.question = (
-                "Explain Python variables to a beginner."
+    idea_cols = st.columns(3)
+    ideas = [
+        ("🐍 Python basics", "Explain Python variables to me as a beginner, using simple examples."),
+        ("📊 Statistics", "Explain mean, median, and mode with a simple example."),
+        ("💻 Computer networks", "Explain what a computer network is and give everyday examples."),
+    ]
+    for col, (label, idea) in zip(idea_cols, ideas):
+        with col:
+            st.button(
+                label,
+                use_container_width=True,
+                on_click=set_suggested_question,
+                args=(idea,),
             )
-            st.rerun()
 
-    with col2:
-        if st.button(
-            "📊 Statistics",
-            use_container_width=True
-        ):
-            st.session_state.question = (
-                "Explain probability in simple English "
-                "with an example."
-            )
-            st.rerun()
-
-    with col3:
-        if st.button(
-            "💻 Computer networks",
-            use_container_width=True
-        ):
-            st.session_state.question = (
-                "Explain how computer networks work "
-                "with a simple example."
-            )
-            st.rerun()
-
-    # ======================================
-    # AI CONNECTION
-    # ======================================
-
-    api_key = os.getenv("GEMINI_API_KEY")
-
-    if not api_key:
-        st.error(
-            "AI access is not configured. "
-            "Check your GEMINI_API_KEY environment variable."
-        )
-
-    else:
-        client = genai.Client(api_key=api_key)
-
-        if st.button(
-            "✨ Explain with AI",
-            type="primary",
-            use_container_width=True
-        ):
-
-            if not question.strip():
-                st.warning("Please enter a question first.")
-
+    if st.button("✨ Explain with AI", type="primary", use_container_width=True):
+        if not question.strip():
+            st.warning("Please type a question first.")
+        else:
+            client = get_client()
+            if client is None:
+                st.error(
+                    "AI access is not configured. In Streamlit Community Cloud, open "
+                    "Manage app → Settings → Secrets and add "
+                    '`GEMINI_API_KEY = "your-key"`.'
+                )
             else:
-
-                instructions = {
-                    "Explain simply": (
-                        "Explain the topic in simple English "
-                        "for a beginner. Define difficult terms."
-                    ),
-                    "Explain step by step": (
-                        "Explain the topic in clear numbered "
-                        "steps, moving from basic to advanced."
-                    ),
-                    "Give practical examples": (
-                        "Explain the topic and provide useful "
-                        "practical examples."
-                    ),
-                    "Summarize a topic": (
-                        "Give a concise summary with the most "
-                        "important points."
-                    ),
-                    "Help me understand code": (
-                        "Explain programming concepts and "
-                        "code line by line when code is provided."
-                    ),
-                    "Generate a quiz": (
-                        "Create five multiple-choice questions about the topic. "
-                        "Give four options for each question, labelled A, B, C, D. "
-                        "Put the answer key at the end with brief explanations."
-                    ),
-                    "Create revision questions": (
-                        "Create ten revision questions about the topic. "
-                        "Include a mixture of short-answer and understanding questions. "
-                        "Provide suggested answers in a separate section at the end."
-                    )
+                mode_instructions = {
+                    "Explain simply": "Use beginner-friendly language and define unfamiliar words.",
+                    "Step-by-step explanation": "Explain in numbered, logical steps.",
+                    "Use practical examples": "Use practical everyday examples and explain each one.",
+                    "Summarize the topic": "Give a concise summary with key takeaways.",
+                    "Explain programming code": "Explain the code line by line, with a small example if useful.",
                 }
-
                 prompt = f"""
-You are ExplainIt AI, a helpful educational assistant.
-
-Teaching style:
-{instructions[study_mode]}
-
-Student's question:
-{question}
-
-Guidelines:
-- Use clear, friendly language.
-- Organize the response with headings when useful.
-- Include examples where appropriate.
-- Use readable Markdown formatting.
-- Be honest about uncertainty.
-- Do not invent facts or references.
-- Help the student understand the reasoning.
+You are ExplainIt AI, a patient learning assistant.
+Answer the learner's question accurately and clearly.
+Learning style: {learning_style}
+Instructions for this style: {mode_instructions[learning_style]}
+Use headings and examples where helpful. If the question is ambiguous, state your assumption.
+Question: {question.strip()}
 """
-
-                with st.spinner(
-                    "📚 Preparing your explanation..."
-                ):
-
-                    try:
+                try:
+                    with st.spinner("ExplainIt AI is preparing your explanation..."):
                         response = client.models.generate_content(
-                            model="gemma-4-26b-a4b-it",
-                            contents=prompt
+                            model=MODEL_NAME,
+                            contents=prompt,
                         )
+                    answer = (response.text or "").strip()
+                    if not answer:
+                        st.error("The AI returned an empty response. Please try again.")
+                    else:
+                        st.session_state.answer = answer
+                        st.session_state.last_question = question.strip()
+                        st.session_state.last_study_mode = learning_style
+                        save_chat(question.strip(), answer, learning_style)
+                        st.success("Your explanation has been saved to learning history.")
+                except Exception as exc:
+                    st.error(
+                        "The AI request failed. Check that your Gemini API key is valid, "
+                        "has access to the selected model, and that your internet connection is working."
+                    )
+                    st.caption(f"Technical detail: {type(exc).__name__}: {exc}")
 
-                        if response.text:
-                            # Display the latest answer.
-                            st.session_state.answer = response.text
-                            st.session_state.last_question = question
-                            st.session_state.question = question
-
-                            # Remember the selected learning style.
-                            st.session_state.last_study_mode = study_mode
-
-                            # Save the conversation permanently.
-                            save_chat(
-                                question=question,
-                                answer=response.text,
-                                study_mode=study_mode
-                            )
-
-                            st.success("Your question and answer have been saved!")
-
-                        else:
-                            st.warning(
-                                "The AI returned an empty answer. "
-                                "Please try again."
-                            )
-
-                    except Exception as error:
-                        st.error(
-                            "We couldn't generate your answer. "
-                            "Check your internet connection and "
-                            "AI model access, then try again."
-                        )
-
-                        # Show technical details for troubleshooting
-                        with st.expander("Technical details"):
-                            st.code(str(error))
-
-    # ======================================
-# DISPLAY AI ANSWER
-# ======================================
-
-if st.session_state.answer:
-
-    st.markdown("---")
-
-    st.markdown(
-        '<div class="section-title">'
-        '💡 Your explanation'
-        '</div>',
-        unsafe_allow_html=True
-    )
-
-    st.caption(
-        "Question: " + st.session_state.last_question
-    )
-
-    # Use a real Streamlit container so the answer
-    # and its Markdown formatting display reliably.
-    with st.container(border=True):
-
-        st.markdown(st.session_state.answer)
-
+    if st.session_state.answer:
         st.divider()
-
-        st.caption(
-            "Learning tip: Verify important facts "
-            "using reliable learning materials."
-        )
-
-    if st.button("🗑️ Clear answer"):
-
-        st.session_state.answer = ""
-        st.session_state.last_question = ""
-        st.session_state.question = ""
-
-        st.rerun()
-
-        # Streamlit Markdown keeps headings, lists and code formatting
+        st.subheader("📖 Your explanation")
         st.markdown(st.session_state.answer)
 
-        st.markdown(
-            """
-            <div style="
-                border-top: 1px solid #E5E7EB;
-                margin-top: 20px;
-                padding-top: 10px;
-                color: #4B5563;
-                font-size: 13px;
-            ">
-                Learning tip: Make sure you understand the
-                explanation, and verify important facts.
-            </div>
-            </div>
-            """,
-            unsafe_allow_html=True
+        safe_filename = "explainit_ai_notes.txt"
+        download_text = (
+            f"ExplainIt AI Notes\n"
+            f"Question: {st.session_state.last_question}\n"
+            f"Learning style: {st.session_state.last_study_mode}\n\n"
+            f"{st.session_state.answer}\n"
+        )
+        st.download_button(
+            "📄 Download explanation (.txt)",
+            data=download_text,
+            file_name=safe_filename,
+            mime="text/plain",
+            use_container_width=True,
         )
 
-        if st.button("🗑️ Clear answer"):
+        st.markdown("### 🔊 Listen to the explanation")
+        st.caption("Uses your browser's built-in speech voice. Voice availability depends on your browser and device.")
+        speech_payload = json.dumps(st.session_state.answer)
+        components.html(
+            f"""
+            <div style="font-family:Arial,sans-serif;color:#F1F5F9;background:#334155;padding:14px;border-radius:12px;">
+              <button id="play" style="background:#1685F8;color:white;border:0;border-radius:8px;padding:10px 16px;cursor:pointer;">▶ Read aloud</button>
+              <button id="stop" style="background:#475569;color:white;border:0;border-radius:8px;padding:10px 16px;margin-left:8px;cursor:pointer;">■ Stop</button>
+              <span id="status" style="margin-left:10px;font-size:13px;">Ready</span>
+            </div>
+            <script>
+              const textToRead = {speech_payload};
+              const statusEl = document.getElementById("status");
+              document.getElementById("play").onclick = () => {{
+                if (!("speechSynthesis" in window)) {{
+                  statusEl.textContent = "Speech is not supported in this browser.";
+                  return;
+                }}
+                window.speechSynthesis.cancel();
+                const utterance = new SpeechSynthesisUtterance(textToRead);
+                utterance.rate = 0.95;
+                utterance.onstart = () => statusEl.textContent = "Reading...";
+                utterance.onend = () => statusEl.textContent = "Finished";
+                window.speechSynthesis.speak(utterance);
+              }};
+              document.getElementById("stop").onclick = () => {{
+                if ("speechSynthesis" in window) window.speechSynthesis.cancel();
+                statusEl.textContent = "Stopped";
+              }};
+            </script>
+            """,
+            height=85,
+        )
 
-            st.session_state.answer = ""
-            st.session_state.last_question = ""
-            st.session_state.question = ""
-
-            st.rerun()
-
-    # ======================================
-    # FEATURE CARDS
-    # ======================================
-
-    st.markdown("---")
-
-    st.markdown(
-        '<div class="section-title">'
-        'Your learning toolkit'
-        '</div>',
-        unsafe_allow_html=True
+# ---------------------- Learning history --------------------
+elif page == "📚 Learning history":
+    st.title("📚 Learning history")
+    st.write("Reopen a previous explanation, or delete entries you no longer need.")
+    st.info(
+        "History is stored in this app's SQLite database. On Streamlit Community Cloud, "
+        "local files may not survive every restart/redeployment. This version is best for "
+        "a demo; durable multi-user history needs a persistent database."
     )
+    chats = get_all_chats()
+    if not chats:
+        st.info("No saved explanations yet. Ask a question on the Home page first.")
+    else:
+        labels = {
+            f"{row[4]} — {row[1][:65]}": row[0]
+            for row in chats
+        }
+        chosen_label = st.selectbox("Saved explanations", list(labels.keys()))
+        chosen_id = labels[chosen_label]
+        selected = get_chat(chosen_id)
+        if selected:
+            st.markdown(f"**Question:** {selected[1]}")
+            st.caption(f"Learning style: {selected[3]} · Saved: {selected[4]}")
+            st.markdown("### Explanation")
+            st.markdown(selected[2])
+            st.download_button(
+                "📄 Download this explanation",
+                data=f"Question: {selected[1]}\n\n{selected[2]}",
+                file_name=f"explainit_history_{selected[0]}.txt",
+                mime="text/plain",
+            )
+            if st.button("🗑️ Delete this explanation"):
+                delete_chat(chosen_id)
+                st.success("Explanation deleted.")
+                st.rerun()
+        with st.expander("Danger zone: clear all learning history"):
+            st.warning("This permanently deletes every entry in this app's local database.")
+            confirm = st.checkbox("I understand and want to delete all history.")
+            if st.button("Clear all history", disabled=not confirm):
+                clear_all_chats()
+                st.success("History cleared.")
+                st.rerun()
 
-    c1, c2, c3 = st.columns(3)
+# ------------------------ Quiz generator --------------------
+elif page == "🎓 Quiz generator":
+    st.title("🎓 Quiz generator")
+    st.write("Create a short multiple-choice quiz to check your understanding.")
 
-    with c1:
-        st.markdown("""
-        <div class="feature-card">
-            <div class="feature-icon">🧠</div>
-            <div class="feature-title">Understand concepts</div>
-            <div class="feature-description">
-                Break difficult topics into simpler ideas.
-            </div>
-        </div>
-        """, unsafe_allow_html=True)
+    quiz_topic = st.text_input(
+        "What topic would you like a quiz about?",
+        placeholder="Example: Python variables, probability, computer networks",
+        value=st.session_state.quiz_topic,
+    )
+    difficulty = st.selectbox("Difficulty", ["Beginner", "Intermediate", "Advanced"])
+    number_questions = st.select_slider("Number of questions", options=[3, 5, 8, 10], value=5)
 
-    with c2:
-        st.markdown("""
-        <div class="feature-card">
-            <div class="feature-icon">🪜</div>
-            <div class="feature-title">Learn step by step</div>
-            <div class="feature-description">
-                Follow explanations in a logical order.
-            </div>
-        </div>
-        """, unsafe_allow_html=True)
+    if st.button("✨ Generate quiz", use_container_width=True):
+        if not quiz_topic.strip():
+            st.warning("Enter a topic first.")
+        else:
+            client = get_client()
+            if client is None:
+                st.error(
+                    "AI access is not configured. Add GEMINI_API_KEY in Streamlit app Secrets."
+                )
+            else:
+                prompt = f"""
+Create {number_questions} multiple-choice quiz questions about: {quiz_topic.strip()}.
+Difficulty: {difficulty}.
+Return ONLY valid JSON (no markdown fences) in this exact format:
+{{
+  "questions": [
+    {{
+      "question": "Question text",
+      "options": ["A. option", "B. option", "C. option", "D. option"],
+      "answer": 0,
+      "explanation": "Short explanation of the correct answer"
+    }}
+  ]
+}}
+The answer must be an integer index from 0 to 3. Exactly four options per question.
+Keep the questions educational, clear, and factually correct.
+"""
+                try:
+                    with st.spinner("Creating your quiz..."):
+                        response = client.models.generate_content(
+                            model=MODEL_NAME,
+                            contents=prompt,
+                        )
+                    raw = (response.text or "").strip()
+                    raw = raw.removeprefix("```json").removeprefix("```").removesuffix("```").strip()
+                    quiz = json.loads(raw)
+                    questions = quiz.get("questions", [])
+                    valid = (
+                        len(questions) > 0
+                        and all(
+                            isinstance(q.get("question"), str)
+                            and isinstance(q.get("options"), list)
+                            and len(q["options"]) == 4
+                            and isinstance(q.get("answer"), int)
+                            and 0 <= q["answer"] <= 3
+                            for q in questions
+                        )
+                    )
+                    if not valid:
+                        raise ValueError("The AI response did not match the expected quiz format.")
+                    st.session_state.quiz_data = quiz
+                    st.session_state.quiz_topic = quiz_topic.strip()
+                    st.session_state.quiz_submitted = False
+                    st.session_state.quiz_score = None
+                    st.rerun()
+                except Exception as exc:
+                    st.error("The quiz could not be generated. Please try again.")
+                    st.caption(f"Technical detail: {type(exc).__name__}: {exc}")
 
-    with c3:
-        st.markdown("""
-        <div class="feature-card">
-            <div class="feature-icon">💡</div>
-            <div class="feature-title">Explore examples</div>
-            <div class="feature-description">
-                Connect new ideas to practical examples.
-            </div>
-        </div>
-        """, unsafe_allow_html=True)
+    if st.session_state.quiz_data:
+        st.divider()
+        st.subheader(f"Quiz: {st.session_state.quiz_topic}")
+        with st.form("quiz_form"):
+            selections = []
+            for i, q in enumerate(st.session_state.quiz_data["questions"]):
+                st.markdown(f"**{i + 1}. {q['question']}**")
+                selection = st.radio(
+                    f"Choose an answer for question {i + 1}",
+                    options=list(range(4)),
+                    format_func=lambda idx, opts=q["options"]: opts[idx],
+                    key=f"quiz_answer_{i}",
+                    index=None,
+                    label_visibility="collapsed",
+                )
+                selections.append(selection)
+            submitted = st.form_submit_button("Check my answers")
+        if submitted:
+            score = 0
+            for q, selection in zip(st.session_state.quiz_data["questions"], selections):
+                if selection == q["answer"]:
+                    score += 1
+            st.session_state.quiz_submitted = True
+            st.session_state.quiz_score = (score, len(selections))
+        if st.session_state.quiz_submitted:
+            score, total = st.session_state.quiz_score
+            st.success(f"You scored {score} out of {total}.")
+            for i, q in enumerate(st.session_state.quiz_data["questions"]):
+                st.markdown(f"**{i + 1}. {q['question']}**")
+                st.write(f"Correct answer: {q['options'][q['answer']]}")
+                st.write(f"Why: {q.get('explanation', 'Review this topic for more detail.')}")
+                st.divider()
+            if st.button("Create another quiz"):
+                st.session_state.quiz_data = None
+                st.session_state.quiz_submitted = False
+                st.session_state.quiz_score = None
+                st.rerun()
 
-    # ======================================
-    # FOOTER
-    # ======================================
+# ---------------------------- About -------------------------
+elif page == "ℹ️ About":
+    st.title("ℹ️ About ExplainIt AI")
+    st.markdown(
+        """
+        ExplainIt AI is a beginner-friendly learning assistant designed to help learners
+        understand difficult concepts using simple explanations, step-by-step guidance,
+        practical examples, summaries, and programming help.
 
-    st.markdown("""
-    <div class="footer">
-        ExplainIt AI · Learn one concept at a time 💜
-        <br>
-        AI can make mistakes. Verify important information.
-    </div>
-    """, unsafe_allow_html=True)
+        **Features**
+        - AI-powered explanations using Gemini
+        - Learning history saved in a local SQLite database
+        - Multiple-choice quiz generation
+        - Browser-based text-to-speech
+        - Downloadable notes for offline revision
+
+        **Privacy and hosting**
+        - Do not enter passwords, API keys, or other sensitive information as questions.
+        - The Gemini API key should be stored in Streamlit Community Cloud Secrets.
+        - This demo's SQLite history is local to the running app and is not a durable,
+          private per-user cloud database.
+        """
+    )
+    st.caption("Built with Python, Streamlit, SQLite, and the Google Gen AI SDK.")
