@@ -41,11 +41,19 @@ st.markdown(
         color: #E2E8F0 !important;
     }
     .hero {
-        background: linear-gradient(135deg, #334155, #064CCB);
-        padding: 2.2rem;
+        background: linear-gradient(125deg, #263B57 0%, #0755B8 58%, #087EAA 100%);
+        padding: 2.4rem;
+        border: 1px solid rgba(147, 197, 253, .28);
         border-radius: 22px;
         margin-bottom: 1.7rem;
+        box-shadow: 0 12px 30px rgba(2, 8, 23, .20);
     }
+    .section-intro { color: #CBD5E1 !important; font-size: 1rem; line-height: 1.65; }
+    .stTabs [data-baseweb="tab-list"] { gap: .5rem; }
+    .stTabs [data-baseweb="tab"] { background: #334155; border-radius: 9px 9px 0 0; padding: .6rem 1rem; }
+    div[data-testid="stMetric"] { background: #334155; border: 1px solid #475569; padding: 1rem; border-radius: 13px; }
+    div[data-testid="stAlert"] { border-radius: 12px; }
+    div[data-testid="stForm"] { background: #273449; border: 1px solid #475569; padding: 1rem; border-radius: 14px; }
     .hero h1 {
         color: #FFFFFF !important;
         font-size: 2.25rem;
@@ -152,6 +160,22 @@ def initialize_database():
             )
             """
         )
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS bookmarks (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                question TEXT NOT NULL,
+                answer TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS study_notes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                title TEXT NOT NULL,
+                content TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+        """)
 
 
 def save_chat(question, answer, study_mode):
@@ -201,6 +225,52 @@ def clear_all_chats():
         conn.execute("DELETE FROM chat_history")
 
 
+def save_bookmark(question, answer):
+    with get_connection() as conn:
+        exists = conn.execute(
+            "SELECT id FROM bookmarks WHERE question = ? AND answer = ?", (question, answer)
+        ).fetchone()
+        if exists:
+            return False
+        conn.execute(
+            "INSERT INTO bookmarks (question, answer, created_at) VALUES (?, ?, ?)",
+            (question, answer, datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
+        )
+        return True
+
+
+def get_bookmarks():
+    with get_connection() as conn:
+        return conn.execute(
+            "SELECT id, question, answer, created_at FROM bookmarks ORDER BY id DESC"
+        ).fetchall()
+
+
+def delete_bookmark(bookmark_id):
+    with get_connection() as conn:
+        conn.execute("DELETE FROM bookmarks WHERE id = ?", (bookmark_id,))
+
+
+def save_study_note(title, content):
+    with get_connection() as conn:
+        conn.execute(
+            "INSERT INTO study_notes (title, content, updated_at) VALUES (?, ?, ?)",
+            (title, content, datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
+        )
+
+
+def get_study_notes():
+    with get_connection() as conn:
+        return conn.execute(
+            "SELECT id, title, content, updated_at FROM study_notes ORDER BY id DESC"
+        ).fetchall()
+
+
+def delete_study_note(note_id):
+    with get_connection() as conn:
+        conn.execute("DELETE FROM study_notes WHERE id = ?", (note_id,))
+
+
 initialize_database()
 
 # ------------------------- Session state --------------------
@@ -212,6 +282,7 @@ defaults = {
     "quiz_topic": "",
     "quiz_submitted": False,
     "quiz_score": None,
+    "explanation_level": "Beginner",
 }
 for key, value in defaults.items():
     if key not in st.session_state:
@@ -227,7 +298,7 @@ with st.sidebar:
     st.caption("Your personal learning companion")
     page = st.radio(
         "🧭 Navigation",
-        ["🏠 Home", "📚 Learning history", "🎓 Quiz generator", "ℹ️ About"],
+        ["🏠 Home", "📚 Learning history", "🔖 Bookmarks", "📝 Study notes", "🎓 Quiz generator", "ℹ️ About"],
         label_visibility="visible",
     )
     st.divider()
@@ -274,11 +345,18 @@ if page == "🏠 Home":
         ],
         key="learning_style",
     )
+    explanation_level = st.selectbox(
+        "Explanation level",
+        ["Beginner", "Intermediate", "Advanced"],
+        help="Choose how much background knowledge the explanation should assume.",
+        key="explanation_level",
+    )
     question = st.text_area(
         "Your question",
         value=st.session_state.last_question if st.session_state.last_question else "",
         placeholder="Example: Explain variables in Python as if I am a beginner...",
         height=130,
+        max_chars=3000,
         key="question_input",
         label_visibility="collapsed",
     )
@@ -326,6 +404,8 @@ if page == "🏠 Home":
 You are ExplainIt AI, a patient learning assistant.
 Answer the learner's question accurately and clearly.
 Learning style: {learning_style}
+Explanation level: {explanation_level}
+Adapt vocabulary, depth, and assumed background knowledge to the selected level.
 Instructions for this style: {mode_instructions[learning_style]}
 Use headings and examples where helpful. If the question is ambiguous, state your assumption.
 Question: {question.strip()}
@@ -346,16 +426,26 @@ Question: {question.strip()}
                         save_chat(question.strip(), answer, learning_style)
                         st.success("Your explanation has been saved to learning history.")
                 except Exception as exc:
-                    st.error(
-                        "The AI request failed. Check that your Gemini API key is valid, "
-                        "has access to the selected model, and that your internet connection is working."
-                    )
-                    st.caption(f"Technical detail: {type(exc).__name__}: {exc}")
+                    error_text = str(exc).lower()
+                    if "503" in error_text or "unavailable" in error_text or "high demand" in error_text:
+                        st.warning("Gemini is temporarily busy. Please wait a minute and try again.")
+                    elif "429" in error_text or "quota" in error_text or "rate" in error_text:
+                        st.warning("The AI service has reached a temporary usage limit. Please try again later.")
+                    else:
+                        st.error("The explanation could not be generated. Please check the app configuration or try again later.")
+                    # Keep provider error details out of the public interface.
+                    st.caption("If the problem continues, the app owner can review the deployment logs.")
 
     if st.session_state.answer:
         st.divider()
         st.subheader("📖 Your explanation")
         st.markdown(st.session_state.answer)
+        if st.button("🔖 Save this explanation to bookmarks", use_container_width=True):
+            added = save_bookmark(st.session_state.last_question, st.session_state.answer)
+            if added:
+                st.success("Saved to bookmarks.")
+            else:
+                st.info("This explanation is already bookmarked.")
 
         safe_filename = "explainit_ai_notes.txt"
         download_text = (
@@ -449,6 +539,68 @@ elif page == "📚 Learning history":
                 st.success("History cleared.")
                 st.rerun()
 
+# -------------------------- Bookmarks ------------------------
+elif page == "🔖 Bookmarks":
+    st.title("🔖 Bookmarked explanations")
+    st.markdown('<p class="section-intro">Keep useful explanations close by for quick revision.</p>', unsafe_allow_html=True)
+    st.info("This demo stores bookmarks in a shared app database. Do not save private or sensitive information here.")
+    bookmarks = get_bookmarks()
+    if not bookmarks:
+        st.info("You have not bookmarked any explanations yet. Open an explanation on Home and select Save to bookmarks.")
+    else:
+        st.caption(f"You have {len(bookmarks)} bookmarked explanation(s).")
+        for bookmark in bookmarks:
+            with st.expander(bookmark[1][:100] or "Saved explanation"):
+                st.caption(f"Saved: {bookmark[3]}")
+                st.markdown(bookmark[2])
+                st.download_button(
+                    "📄 Download bookmark",
+                    data=f"Question: {bookmark[1]}\n\n{bookmark[2]}",
+                    file_name=f"explainit_bookmark_{bookmark[0]}.txt",
+                    mime="text/plain",
+                    key=f"download_bookmark_{bookmark[0]}",
+                )
+                if st.button("Remove bookmark", key=f"delete_bookmark_{bookmark[0]}"):
+                    delete_bookmark(bookmark[0])
+                    st.rerun()
+
+# --------------------------- Study notes ---------------------
+elif page == "📝 Study notes":
+    st.title("📝 My study notes")
+    st.markdown('<p class="section-intro">Write and save your own revision notes.</p>', unsafe_allow_html=True)
+    st.info("This demo stores notes in a shared app database. Do not enter private or sensitive information.")
+    with st.form("new_note_form", clear_on_submit=True):
+        note_title = st.text_input("Note title", max_chars=100, placeholder="e.g. Introduction to computer networks")
+        note_content = st.text_area("Your notes", max_chars=10000, height=180, placeholder="Write the important points you want to remember...")
+        save_note = st.form_submit_button("💾 Save study note", use_container_width=True)
+    if save_note:
+        if not note_title.strip() or not note_content.strip():
+            st.warning("Enter both a title and note content.")
+        else:
+            save_study_note(note_title.strip(), note_content.strip())
+            st.success("Your study note has been saved.")
+            st.rerun()
+    st.divider()
+    st.subheader("Saved notes")
+    notes = get_study_notes()
+    if not notes:
+        st.info("No study notes yet. Create your first note above.")
+    else:
+        for note in notes:
+            with st.expander(note[1]):
+                st.caption(f"Saved: {note[3]}")
+                st.markdown(note[2])
+                st.download_button(
+                    "📄 Download note",
+                    data=f"{note[1]}\n\n{note[2]}",
+                    file_name=f"explainit_note_{note[0]}.txt",
+                    mime="text/plain",
+                    key=f"download_note_{note[0]}",
+                )
+                if st.button("Delete note", key=f"delete_note_{note[0]}"):
+                    delete_study_note(note[0])
+                    st.rerun()
+
 # ------------------------ Quiz generator --------------------
 elif page == "🎓 Quiz generator":
     st.title("🎓 Quiz generator")
@@ -458,6 +610,7 @@ elif page == "🎓 Quiz generator":
         "What topic would you like a quiz about?",
         placeholder="Example: Python variables, probability, computer networks",
         value=st.session_state.quiz_topic,
+        max_chars=200,
     )
     difficulty = st.selectbox("Difficulty", ["Beginner", "Intermediate", "Advanced"])
     number_questions = st.select_slider("Number of questions", options=[3, 5, 8, 10], value=5)
@@ -517,9 +670,8 @@ Keep the questions educational, clear, and factually correct.
                     st.session_state.quiz_submitted = False
                     st.session_state.quiz_score = None
                     st.rerun()
-                except Exception as exc:
-                    st.error("The quiz could not be generated. Please try again.")
-                    st.caption(f"Technical detail: {type(exc).__name__}: {exc}")
+                except Exception:
+                    st.error("The quiz could not be generated. Please try again later or check the deployment logs.")
 
     if st.session_state.quiz_data:
         st.divider()
@@ -571,6 +723,9 @@ elif page == "ℹ️ About":
         **Features**
         - AI-powered explanations using Gemini
         - Learning history saved in a local SQLite database
+        - Bookmarked explanations for revision
+        - Personal study notes
+        - Beginner, intermediate, and advanced explanation levels
         - Multiple-choice quiz generation
         - Browser-based text-to-speech
         - Downloadable notes for offline revision
